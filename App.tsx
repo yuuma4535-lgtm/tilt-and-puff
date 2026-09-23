@@ -231,16 +231,29 @@ export default function App() {
   };
 
   const onCaptureSave = async () => {
-    if (capturing) return;
+    console.log('[capture] shutter pressed', {
+      capturing,
+      captureEnabled,
+      cameraLive,
+      frameW,
+      frameH,
+    });
+    if (capturing) {
+      console.log('[capture] ignored — already capturing');
+      return;
+    }
     setCapturing(true);
     try {
-      await composeCaptureToLibrary({
+      const ok = await composeCaptureToLibrary({
         cameraRef,
         deviceLayerRef,
         cameraGranted: cameraLive,
         screenW: frameW,
         screenH: frameH,
       });
+      console.log('[capture] compose finished', { ok });
+    } catch (e) {
+      console.error('[capture] compose threw', e);
     } finally {
       setCapturing(false);
     }

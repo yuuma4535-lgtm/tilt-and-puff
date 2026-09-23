@@ -29,6 +29,10 @@ const translations = {
     share: 'Share',
     saveOk: 'Saved to camera roll',
     saveOkWeb: 'Image downloaded',
+    saveOkWebIos:
+      'Image opened in a new tab — long-press the image and choose Save Image',
+    saveOkShare: 'Shared — you can Save Image from the share sheet',
+    shareCancelled: 'Share cancelled',
     motionPermission: 'Enable tilt sensing',
     motionPermissionHint:
       'Required on iPhone Safari to detect tilt for puffing. Tap the button, then Allow.',
@@ -89,6 +93,10 @@ const translations = {
     share: '共有',
     saveOk: 'カメラロールに保存しました',
     saveOkWeb: '画像をダウンロードしました',
+    saveOkWebIos:
+      '画像を新しいタブで開きました。画像を長押しして「写真に追加」を選んでください',
+    saveOkShare: '共有シートを開きました。「画像を保存」などを選べます',
+    shareCancelled: '共有をキャンセルしました',
     motionPermission: '傾き検知を許可',
     motionPermissionHint:
       'iPhoneのSafariでは、吸引の傾き検知に許可が必要です。ボタンを押して「許可」を選んでください',

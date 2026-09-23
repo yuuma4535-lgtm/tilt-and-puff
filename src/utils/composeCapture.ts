@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import { Alert, Platform, type View } from 'react-native';
+import { Platform, type View } from 'react-native';
 import {
   ImageFormat,
   Skia,
@@ -8,9 +8,12 @@ import {
 } from '@shopify/react-native-skia';
 import type { CameraBackdropHandle } from '../components/CameraBackdrop';
 import { t } from '../i18n';
+import { notifyUser } from './notifyUser';
+import { saveJpegOnWeb } from './saveJpegOnWeb';
 
 /** Long-edge cap so Skia offscreen stays fast on older phones */
 const MAX_OUT_EDGE = 1920;
+const SNAPSHOT_TIMEOUT_MS = 10_000;
 
 type ComposeOpts = {
   cameraRef: RefObject<CameraBackdropHandle | null>;
@@ -22,6 +25,7 @@ type ComposeOpts = {
 };
 
 type Stage =
+  | 'start'
   | 'media-permission'
   | 'camera-photo'
   | 'device-snapshot'
@@ -31,6 +35,10 @@ type Stage =
   | 'save';
 
 function logStage(stage: Stage, detail?: unknown) {
+  if (detail !== undefined && typeof detail === 'object' && !(detail instanceof Error)) {
+    console.log(`[capture] ${stage}`, detail);
+    return;
+  }
   const msg =
     detail === undefined
       ? `[capture] ${stage}`
@@ -69,7 +77,6 @@ async function loadSkiaImage(uri: string): Promise<SkImage | null> {
   } catch (e) {
     logStage('load-photo', e);
   }
-  // Fallback: fetch → bytes (some file:// hosts fail fromURI)
   try {
     const res = await fetch(uri);
     const buf = await res.arrayBuffer();
@@ -100,13 +107,35 @@ function fail(stage: Stage, err?: unknown): false {
       : typeof err === 'string'
         ? err
         : stage;
-  Alert.alert(t('capture'), `${t('captureFailed')}\n(${stage}: ${detail})`);
+  notifyUser(t('capture'), `${t('captureFailed')}\n(${stage}: ${detail})`);
   return false;
 }
 
+async function makeImageFromViewWithTimeout(
+  ref: RefObject<View | null>,
+): Promise<SkImage | null> {
+  try {
+    const result = await Promise.race([
+      makeImageFromView(ref),
+      new Promise<null>((resolve) => {
+        setTimeout(() => {
+          console.warn(
+            `[capture] device-snapshot timed out after ${SNAPSHOT_TIMEOUT_MS}ms`,
+          );
+          resolve(null);
+        }, SNAPSHOT_TIMEOUT_MS);
+      }),
+    ]);
+    return result;
+  } catch (e) {
+    logStage('device-snapshot', e);
+    return null;
+  }
+}
+
 /**
- * Camera still + device-layer snapshot (Skia makeImageFromView) → JPEG in library.
- * view-shot cannot capture Skia Canvas children — that was the prior failure mode.
+ * Camera still + device-layer snapshot (Skia makeImageFromView) → JPEG.
+ * Web: Share API / Blob download (iOS-friendly). Native: MediaLibrary.
  */
 export async function composeCaptureToLibrary({
   cameraRef,
@@ -115,26 +144,45 @@ export async function composeCaptureToLibrary({
   screenW,
   screenH,
 }: ComposeOpts): Promise<boolean> {
-  let stage: Stage = 'media-permission';
+  let stage: Stage = 'start';
+  logStage('start', {
+    platform: Platform.OS,
+    cameraGranted,
+    screenW,
+    screenH,
+    hasDeviceRef: !!deviceLayerRef.current,
+    hasCameraRef: !!cameraRef.current,
+  });
+
   try {
     if (Platform.OS !== 'web') {
+      stage = 'media-permission';
       logStage('media-permission', 'requesting');
       const MediaLibrary = await import('expo-media-library');
       const mediaPerm = await MediaLibrary.requestPermissionsAsync(true);
       if (!mediaPerm.granted) {
-        Alert.alert(t('capture'), t('photoDenied'));
+        notifyUser(t('capture'), t('photoDenied'));
         return false;
       }
     } else {
-      logStage('media-permission', 'skipped (web download)');
+      stage = 'media-permission';
+      logStage('media-permission', 'skipped (web download/share)');
     }
 
     stage = 'camera-photo';
     let photoUri: string | null = null;
     if (cameraGranted) {
       logStage('camera-photo', 'takePhoto…');
-      photoUri = (await cameraRef.current?.takePhoto()) ?? null;
-      logStage('camera-photo', photoUri ? `ok ${photoUri.slice(0, 48)}…` : 'null');
+      try {
+        photoUri = (await cameraRef.current?.takePhoto()) ?? null;
+      } catch (e) {
+        logStage('camera-photo', e);
+        photoUri = null;
+      }
+      logStage(
+        'camera-photo',
+        photoUri ? `ok ${photoUri.slice(0, 48)}…` : 'null (will use fallback bg)',
+      );
     } else {
       logStage('camera-photo', 'skipped (no permission / camera off)');
     }
@@ -144,7 +192,7 @@ export async function composeCaptureToLibrary({
     if (!deviceLayerRef.current) {
       return fail('device-snapshot', 'deviceLayerRef is null');
     }
-    const deviceImg = await makeImageFromView(deviceLayerRef);
+    const deviceImg = await makeImageFromViewWithTimeout(deviceLayerRef);
     if (!deviceImg) {
       return fail(
         'device-snapshot',
@@ -221,21 +269,30 @@ export async function composeCaptureToLibrary({
     stage = 'encode';
     const snap = surface.makeImageSnapshot();
     const b64 = snap.encodeToBase64(ImageFormat.JPEG, 90);
+    logStage('encode', b64 ? `jpeg b64 len=${b64.length}` : 'empty');
     if (!b64 || b64.length < 32) {
       return fail('encode', 'empty JPEG payload');
     }
+
     stage = 'save';
     if (Platform.OS === 'web') {
-      // Browser download — no MediaLibrary
-      const a = document.createElement('a');
-      a.href = `data:image/jpeg;base64,${b64}`;
-      a.download = `tilt-puff-${Date.now()}.jpg`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      logStage('save', 'web download ok');
-      Alert.alert(t('capture'), t('saveOkWeb'));
-      return true;
+      const filename = `tilt-puff-${Date.now()}.jpg`;
+      try {
+        const result = await saveJpegOnWeb(b64, filename);
+        logStage('save', `web result=${result}`);
+        if (result === 'cancelled') {
+          // User dismissed share/sheet — no error toast
+          return false;
+        }
+        if (result === 'shared' || result === 'sheet' || result === 'opened') {
+          // Share sheet / save sheet / opened tab already provided UI
+          return true;
+        }
+        notifyUser(t('capture'), t('saveOkWeb'));
+        return true;
+      } catch (e) {
+        return fail('save', e);
+      }
     }
 
     const FileSystem = await import('expo-file-system/legacy');
@@ -252,7 +309,7 @@ export async function composeCaptureToLibrary({
 
     const asset = await MediaLibrary.Asset.create(outPath);
     logStage('save', `ok ${asset.id}`);
-    Alert.alert(t('capture'), t('saveOk'));
+    notifyUser(t('capture'), t('saveOk'));
     return true;
   } catch (e) {
     return fail(stage, e);

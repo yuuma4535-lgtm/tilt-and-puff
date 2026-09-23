@@ -313,7 +313,10 @@ export function SessionScreen({
 
       {onCapturePress && !settling ? (
         <Pressable
-          onPress={onCapturePress}
+          onPress={() => {
+            console.log('[capture] SessionScreen shutter onPress');
+            onCapturePress();
+          }}
           disabled={capturing}
           style={[
             styles.shutter,

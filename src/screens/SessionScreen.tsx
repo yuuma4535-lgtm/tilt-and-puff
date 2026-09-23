@@ -235,6 +235,7 @@ export function SessionScreen({
           <View
             ref={deviceLayerRef}
             collapsable={false}
+            nativeID="tilt-puff-capture-layer"
             style={styles.captureLayer}
             pointerEvents="box-none"
           >

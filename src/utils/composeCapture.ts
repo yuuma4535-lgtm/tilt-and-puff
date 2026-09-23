@@ -8,6 +8,7 @@ import {
 } from '@shopify/react-native-skia';
 import type { CameraBackdropHandle } from '../components/CameraBackdrop';
 import { t } from '../i18n';
+import { composeWebCaptureJpeg } from './captureLayerDom';
 import { notifyUser } from './notifyUser';
 import { saveJpegOnWeb } from './saveJpegOnWeb';
 
@@ -35,7 +36,11 @@ type Stage =
   | 'save';
 
 function logStage(stage: Stage, detail?: unknown) {
-  if (detail !== undefined && typeof detail === 'object' && !(detail instanceof Error)) {
+  if (
+    detail !== undefined &&
+    typeof detail === 'object' &&
+    !(detail instanceof Error)
+  ) {
     console.log(`[capture] ${stage}`, detail);
     return;
   }
@@ -126,16 +131,29 @@ async function makeImageFromViewWithTimeout(
         }, SNAPSHOT_TIMEOUT_MS);
       }),
     ]);
-    return result;
+    return result ?? null;
   } catch (e) {
     logStage('device-snapshot', e);
     return null;
   }
 }
 
+async function saveWebJpeg(b64: string): Promise<boolean> {
+  const filename = `tilt-puff-${Date.now()}.jpg`;
+  try {
+    const result = await saveJpegOnWeb(b64, filename);
+    logStage('save', `web result=${result}`);
+    if (result === 'cancelled') return false;
+    return true;
+  } catch (e) {
+    return fail('save', e);
+  }
+}
+
 /**
- * Camera still + device-layer snapshot (Skia makeImageFromView) → JPEG.
- * Web: Share API / Blob download (iOS-friendly). Native: MediaLibrary.
+ * Camera still + device-layer snapshot → JPEG.
+ * Native: Skia makeImageFromView + MediaLibrary.
+ * Web: DOM canvas composite (makeImageFromView is unimplemented / needs callback).
  */
 export async function composeCaptureToLibrary({
   cameraRef,
@@ -155,18 +173,56 @@ export async function composeCaptureToLibrary({
   });
 
   try {
-    if (Platform.OS !== 'web') {
+    // ── Web path: no bare makeImageFromView (always null without a callback) ──
+    if (Platform.OS === 'web') {
       stage = 'media-permission';
-      logStage('media-permission', 'requesting');
-      const MediaLibrary = await import('expo-media-library');
-      const mediaPerm = await MediaLibrary.requestPermissionsAsync(true);
-      if (!mediaPerm.granted) {
-        notifyUser(t('capture'), t('photoDenied'));
-        return false;
+      logStage('media-permission', 'skipped (web)');
+
+      stage = 'camera-photo';
+      let photoUri: string | null = null;
+      if (cameraGranted) {
+        logStage('camera-photo', 'takePhoto…');
+        try {
+          photoUri = (await cameraRef.current?.takePhoto()) ?? null;
+        } catch (e) {
+          logStage('camera-photo', e);
+        }
+        logStage(
+          'camera-photo',
+          photoUri ? `ok ${photoUri.slice(0, 48)}…` : 'null',
+        );
+      } else {
+        logStage('camera-photo', 'skipped');
       }
-    } else {
-      stage = 'media-permission';
-      logStage('media-permission', 'skipped (web download/share)');
+
+      stage = 'device-snapshot';
+      logStage('device-snapshot', 'DOM canvas composite…');
+      stage = 'compose';
+      const b64 = await composeWebCaptureJpeg({
+        photoDataUrl: photoUri,
+        deviceLayerRef,
+        screenW,
+        screenH,
+      });
+      if (!b64 || b64.length < 32) {
+        return fail(
+          'device-snapshot',
+          'DOM snapshot failed (no Skia canvases captured)',
+        );
+      }
+      logStage('encode', `jpeg b64 len=${b64.length}`);
+      stage = 'save';
+      return saveWebJpeg(b64);
+    }
+
+    // ── Native path ──
+    stage = 'media-permission';
+    logStage('media-permission', 'requesting');
+    const MediaLibrary = await import('expo-media-library');
+    const mediaPerm = await MediaLibrary.requestPermissionsAsync(true);
+    if (!mediaPerm.granted) {
+      notifyUser(t('capture'), t('photoDenied'));
+      return false;
     }
 
     stage = 'camera-photo';
@@ -181,7 +237,9 @@ export async function composeCaptureToLibrary({
       }
       logStage(
         'camera-photo',
-        photoUri ? `ok ${photoUri.slice(0, 48)}…` : 'null (will use fallback bg)',
+        photoUri
+          ? `ok ${photoUri.slice(0, 48)}…`
+          : 'null (will use fallback bg)',
       );
     } else {
       logStage('camera-photo', 'skipped (no permission / camera off)');
@@ -275,28 +333,7 @@ export async function composeCaptureToLibrary({
     }
 
     stage = 'save';
-    if (Platform.OS === 'web') {
-      const filename = `tilt-puff-${Date.now()}.jpg`;
-      try {
-        const result = await saveJpegOnWeb(b64, filename);
-        logStage('save', `web result=${result}`);
-        if (result === 'cancelled') {
-          // User dismissed share/sheet — no error toast
-          return false;
-        }
-        if (result === 'shared' || result === 'sheet' || result === 'opened') {
-          // Share sheet / save sheet / opened tab already provided UI
-          return true;
-        }
-        notifyUser(t('capture'), t('saveOkWeb'));
-        return true;
-      } catch (e) {
-        return fail('save', e);
-      }
-    }
-
     const FileSystem = await import('expo-file-system/legacy');
-    const MediaLibrary = await import('expo-media-library');
     const cacheDir = FileSystem.cacheDirectory;
     if (!cacheDir) {
       return fail('encode', 'FileSystem.cacheDirectory is null');

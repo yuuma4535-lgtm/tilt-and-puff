@@ -30,11 +30,11 @@ module.exports = {
   },
 
   /**
-   * Google AdSense (web only). Leave clientId empty to show a local placeholder
-   * (no external request). Fill with ca-pub-… / data-ad-slot from AdSense console.
+   * Google AdSense (web only). Leave bannerSlot / interstitialSlot empty to
+   * show a local placeholder until ad units are created in AdSense console.
    */
   adsense: {
-    clientId: '', // e.g. 'ca-pub-XXXXXXXXXXXXXXXX'
+    clientId: 'ca-pub-2605764921087854',
     bannerSlot: '', // e.g. '1234567890'
     /** Full-screen-ish display unit used after every N sessions */
     interstitialSlot: '',

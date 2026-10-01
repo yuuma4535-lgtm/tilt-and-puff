@@ -52,6 +52,7 @@ import { SessionScreen } from './src/screens/SessionScreen';
 import { useSessionAudio } from './src/hooks/useSessionAudio';
 import { composeCaptureToLibrary } from './src/utils/composeCapture';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
+import { WebAnalytics } from './src/analytics/WebAnalytics';
 
 const BURN_SPEEDS: BurnSpeed[] = ['slow', 'normal', 'fast'];
 const IS_WEB = Platform.OS === 'web';
@@ -621,6 +622,7 @@ export default function App() {
           </View>
         </View>
         <AdsRootExtras />
+        {IS_WEB ? <WebAnalytics /> : null}
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
